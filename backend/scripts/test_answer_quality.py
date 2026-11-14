@@ -11,7 +11,7 @@ Covers the three answer-quality fixes from the release checklist:
 
 Plus the Professional Presentation rules: direct-answer-first, Markdown
 formatting guidance, bullet lists for conditions, tables only for comparisons,
-and a terminal "Sources" section with filename + page number.
+and no model-generated Sources section (citations render from retrieved metadata).
 
 Deterministic: no live model calls of any kind. RAG integration tests use a
 mocked LLM and the REAL knowledge base read-only.
@@ -101,8 +101,8 @@ for marker in [
     "Markdown",
     "bold",
     "bullet",
-    "Sources",
-    "filename and its page number",
+    'do not generate a "sources" heading',
+    "application displays citations automatically",
     "Never force",
 ]:
     if marker.lower() in PUGPT_SYSTEM_PROMPT.lower():
