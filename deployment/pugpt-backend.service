@@ -1,0 +1,67 @@
+# PUGPT — proposed systemd unit for the FastAPI backend.
+# TEMPLATE — NOT installed and NOT tested. Before using:
+#   1. Replace every <PLACEHOLDER> (see comments).
+#   2. Create the service account (see deployment.md).
+#   3. Create the EnvironmentFile with mode 600 and real production values.
+#   4. Copy to /etc/systemd/system/pugpt-backend.service
+#   5. systemctl daemon-reload && systemctl enable --now pugpt-backend
+#   6. systemctl status pugpt-backend && journalctl -u pugpt-backend -f
+#
+# Guarantees: exactly ONE worker; hot reload disabled; binds to localhost only;
+# non-root runtime account; secrets via an external EnvironmentFile (NOT in
+# this unit); restart on failure; host-port exposure stays off this machine.
+
+[Unit]
+Description=PUGPT - University of the Punjab GPT (FastAPI backend)
+# PUGPT embeds every question via Ollama; order after it if Ollama is a
+# systemd service on the same host (adjust name if different):
+# After=network.target ollama.service
+After=network.target
+
+[Service]
+Type=simple
+
+# Dedicated non-root account (create with: sudo useradd --system --home <DEPLOYMENT_ROOT>/backend --shell /usr/sbin/nologin pugpt)
+User=pugpt
+Group=pugpt
+
+# App root (contains app/, requirements.txt, data/) — absolute path.
+WorkingDirectory=<DEPLOYMENT_ROOT>/backend
+ExecStart=<DEPLOYMENT_ROOT>/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# Environment: secrets MUST live here (mode 600, root:pugpt or pugpt:pugpt),
+# never in this unit, never in the repo. Do NOT commit the file.
+EnvironmentFile=/etc/pugpt/pugpt.env
+Environment=PYTHONUNBUFFERED=1
+
+# If Ollama runs as a non-systemd background process instead of a service,
+# start it separately (e.g. via a second systemd unit or launchd/init).
+
+# Failure handling: restart, but with backoff; after 5 failed restarts in
+# 60s the unit enters failed state until you intervene.
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+TimeoutStartSec=60
+TimeoutStopSec=15
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Writable state only where the app needs it:
+#   - ChromaDB persistent path (default <WT>/backend/data/chroma)
+#   - global daily counter (backend/data/global_rate_limit.sqlite3)
+ReadWritePaths=<DEPLOYMENT_ROOT>/backend/data
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+LimitNOFILE=4096
+# Do NOT set LimitNPROC or memory limits unless measured; single worker needs headroom.
+
+[Install]
+WantedBy=multi-user.target

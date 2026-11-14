@@ -1,0 +1,38 @@
+# PUGPT — Linux (Docker) runtime dependencies used by the image in this repo.
+# Copied from backend/requirements.txt with only the changes required to resolve
+# on Linux x86_64 with Python 3.12 (see Dockerfile):
+#   pymupdf==2.1 -> pymupdf==1.26.0  (2.1 has no manylinux wheel on PyPI; the
+#                                      Linux source cannot be installed and the
+#                                      build would fail before any code runs).
+# Do NOT change anything else here without a fresh `pip check` + smoke validation.
+# Windows development remains pinned to backend/requirements.txt (Python 3.14.7).
+
+fastapi==0.162.4
+uvicorn[standard]==0.54.0
+pydantic==2.14.3
+pydantic-settings==2.16.2
+httpx==0.28.1
+chromadb==1.5.9
+pymupdf==1.26.0
+
+# --- FastEmbed runtime (production embedding provider) ---
+fastembed==0.9.1               # nomic-embed-text-v1.5-Q, fully in-process, CPU-only
+
+# --- Demonstrated-critical transitive pins (verified working in this venv) ---
+# chromadb 1.5.9 hard-requires these; fastembed 0.9.1 requires huggingface_hub<2.0.
+numpy==2.5.4
+onnxruntime==1.31.1           # fastembed + chromadb both use ONNX
+tokenizers==0.23.3
+huggingface_hub==1.33.0        # fastembed 0.9.1 requirement (<2.0)
+kubernetes==37.0.2
+orjson==3.13.0
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
+grpcio==1.85.1
+starlette==1.10.0          # fastapi hard dependency; ABI-verified with 0.162.4
+pydantic_core==2.50.4      # pydantic hard dependency
+httpcore==1.0.9             # httpx hard dependency
+loguru==0.7.3               # fastembed 0.9.1 dependency (logging)
+py-rust-stemmers==0.1.8     # fastembed 0.9.1 dependency
+win32_setctime==1.2.1; sys_platform == "win32"   # loguru dependency, Windows only

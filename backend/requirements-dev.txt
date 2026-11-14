@@ -1,0 +1,15 @@
+# PUGPT — development / testing dependencies.
+# Production runtime deps come from requirements.txt (pinned, verified).
+#     python -m pip install -r requirements-dev.txt
+#
+# IMPORTANT: pytest and ruff are NOT installed in this project's working
+# virtualenv and their exact versions are NOT verified here (this project's
+# test suites run as plain `python scripts/test_*.py`, not under pytest).
+# The versions below are widely-used stable pins offered as a starting point;
+# re-pin them after your first fresh dev install (pip freeze) once verified.
+# If you do not need pytest/ruff, install only requirements.txt.
+
+-r requirements.txt
+
+pytest==8.3.4
+ruff==0.8.4

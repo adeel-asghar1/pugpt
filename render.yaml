@@ -1,0 +1,72 @@
+# PUGPT — Render deployment blueprint (NOT deployed; blueprint reference only).
+# Render reads this file when using "Blueprint" deploy, or paste equivalent
+# settings into the dashboard manually. No secret values appear in this file.
+
+services:
+  - type: web
+    name: pugpt
+    runtime: docker
+    # Free plan limitations: 750 hrs/mo, 512 MB RAM, 0.1 CPU, sleeps 15 min idle.
+    plan: free
+    # Region — pick one you can actually create a free plan in.
+    # 'oregon' (US West) / 'ohio' / 'virginia' are the typical free options.
+    region: oregon
+    # Docker build context = repo root; Dockerfile on repo root.
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      # --- embedding provider ---
+      - key: EMBEDDING_PROVIDER
+        value: fastembed
+      - key: FASTEMBED_MODEL_NAME
+        value: nomic-ai/nomic-embed-text-v1.5-Q
+      - key: CHROMA_COLLECTION
+        value: pugpt_knowledge_fastembed_test
+      - key: CHROMA_PERSIST_PATH
+        value: /app/chroma
+      - key: FASTEMBED_CACHE_DIR
+        value: /root/.cache/fastembed
+
+      # --- generation ---
+      - key: LLM_PROVIDER
+        value: groq
+      - key: GROQ_BASE_URL
+        value: https://api.groq.com/openai/v1/chat/completions
+      - key: GROQ_CHAT_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_TIMEOUT
+        value: "120"
+      - key: GROQ_API_KEY
+        sync: false          # MUST be set in Render dashboard — never in this file
+
+      # --- web search (start disabled) ---
+      - key: WEB_SEARCH_ENABLED
+        value: "false"
+      - key: TAVILY_API_KEY
+        sync: false          # set only if you enable web search
+
+      # --- retrieval ---
+      - key: RAG_TOP_K
+        value: "5"
+      - key: RAG_DISTANCE_THRESHOLD
+        value: "0.5"
+
+      # --- CORS: set to your Cloudflare Pages URL once deployed ---
+      - key: CORS_ORIGINS
+        value: https://pugpt.pages.dev
+
+      # --- rate limiting (in-memory per-instance, resets on restart) ---
+      - key: RATE_LIMIT_CHAT
+        value: "10"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: RATE_LIMIT_TRUST_PROXY
+        value: "true"       # Render terminates TLS and sets X-Forwarded-For
+      - key: MAX_CHAT_REQUESTS_PER_DAY
+        value: "500"
+      - key: RATE_LIMIT_GLOBAL_DB_PATH
+        value: /tmp/global_rate_limit.sqlite3
+    autoDeploy: false
+    # Wake-from-sleep is automatic on first request (~60 s cold start).
+    # Render does NOT run Ollama — embeddings come from FastEmbed in the image.
+    # ChromaDB is baked into the image (read-only) — no ephemeral DB risk.

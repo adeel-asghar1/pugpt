@@ -1,0 +1,37 @@
+# Keep the image lean and secret-free.
+.git
+.gitignore
+**/.env
+**/.env.*
+**/venv/
+**/node_modules/
+**/dist/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Local data & documentation (not needed at runtime)
+backend/data/
+backend/venv/
+backend/.env
+knowledge_base/
+!deployment/chroma_fastembed/
+
+# Dev / test / reports
+**/.pytest_cache/
+**/.ruff_cache/
+backend/scripts/test_*.py
+knowledge_base/reports/
+
+# Docs that belong in the repo but not the image
+*.md
+deployment.md
+README.md
+LICENSE*
+Dockerfile
+.render-*
+.dockerignore
+render.yaml
+render.yml
+docker-compose*.yml
+deployment/chroma/

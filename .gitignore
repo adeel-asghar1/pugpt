@@ -1,0 +1,36 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Environment
+.env
+
+# ChromaDB persistent storage (rebuilt by ingestion)
+backend/data/chroma/
+
+# Generated validation reports
+knowledge_base/reports/*.md
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Step 7C/D: exclude local databases, reports and source PDFs from Git
+backend/data/
+knowledge_base/reports/
+knowledge_base/documents/
+
+# Step 7: build artifacts & wheel caches (local only)
+deployment/wheels/
+deployment/fastembed_cache/

@@ -1,0 +1,98 @@
+name: Validate Docker image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  IMAGE_REF: pugpt-ci-test:latest
+  CONTAINER_NAME: pugpt-ci-test
+  HOST_PORT: "8080"
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image (no registry push)
+        run: docker build --tag "$IMAGE_REF" .
+
+      - name: Start container (no secrets)
+        run: |
+          docker run -d --name "$CONTAINER_NAME" \
+            -p "$HOST_PORT:8000" \
+            -e LLM_PROVIDER=groq \
+            -e CHROMA_PERSIST_PATH=/app/chroma \
+            -e CHROMA_COLLECTION=pugpt_knowledge_fastembed_test \
+            "$IMAGE_REF"
+
+      - name: Wait for /api/health (200)
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /tmp/health.json -w '%{http_code}' "http://127.0.0.1:$HOST_PORT/api/health" || true)
+            if [ "$code" = "200" ]; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container did not become healthy in time"
+          docker logs "$CONTAINER_NAME"
+          exit 1
+
+      - name: Verify /api/health reports FastEmbed (no LLM call)
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          h = json.load(urllib.request.urlopen(f"http://127.0.0.1:$HOST_PORT/api/health"))
+          assert h.get("status") == "ok", h
+          e = h.get("embedding") or {}
+          assert e.get("provider") == "fastembed", e
+          assert e.get("model") == "nomic-ai/nomic-embed-text-v1.5-Q", e
+          assert e.get("dimension") == 768, e
+          assert not h.get("ollama", {}).get("reachable", False), "ollama should NOT be required"
+          print("health OK:", json.dumps(e))
+          PY
+
+      - name: Verify packaged Chroma collection count == 519
+        run: |
+          docker exec -i -w /app/backend "$CONTAINER_NAME" python - <<'PY'
+          import os
+          import chromadb
+          path = os.environ.get("CHROMA_PERSIST_PATH", "/app/chroma")
+          client = chromadb.PersistentClient(path=path)
+          col = client.get_collection(os.environ.get("CHROMA_COLLECTION", "pugpt_knowledge_fastembed_test"))
+          n = col.count()
+          print("collection count:", n)
+          assert n == 519, f"expected 519 records, got {n}"
+          PY
+
+      - name: Retrieval-only smoke check (no generation)
+        run: |
+          docker exec -i -w /app/backend "$CONTAINER_NAME" python - <<'PY'
+          import os
+          import chromadb
+          from app.services.embedding_service import embedding_service
+          path = os.environ.get("CHROMA_PERSIST_PATH", "/app/chroma")
+          client = chromadb.PersistentClient(path=path)
+          col = client.get_collection(os.environ.get("CHROMA_COLLECTION", "pugpt_knowledge_fastembed_test"))
+          # Phrasing verified on this exact FastEmbed build/model: yields
+          # Dues-Fee-Schedule in the top-6. (FastEmbed responds to
+          # token-anchored queries better than to paraphrased ones.)
+          vec = embedding_service.embed_text("BS CS fee 2026-27")
+          assert len(vec) == 768
+          res = col.query(query_embeddings=[vec], n_results=5)
+          names = [m.get("filename") for m in res["metadatas"][0]]
+          print("top-5 filenames:", names)
+          assert any("Dues-Fee-Schedule" in (n or "") for n in names), names
+          PY
+
+      - name: Stop and remove test container
+        if: always()
+        run: |
+          docker stop "$CONTAINER_NAME" || true
+          docker rm "$CONTAINER_NAME" || true
