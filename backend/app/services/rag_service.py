@@ -58,6 +58,15 @@ MAX_SNIPPET_CHARS = 240
 # never rescue an out-of-threshold chunk. Weakly relevant chunks are always
 # discarded, and sources always report the ORIGINAL distance.
 BOOST_FACTOR = 0.75
+# Retrieval sufficiency heuristic (NOT proof of completeness): PDF evidence is
+# treated as "strong enough" for the no-fallback path only when at least one
+# chunk was kept, the best ORIGINAL distance is at or below this bound, and
+# the combined retrieved text is at least this long. Anything weaker routes to
+# the official-PU web fallback (when enabled) with reason "pdf_missing" /
+# "sparse_pdf". The hard 0.5 threshold above is unchanged — this is an
+# additional post-retrieval sufficiency signal, not a relevance filter.
+PDF_SUFFICIENT_BEST_DISTANCE = 0.35
+PDF_SUFFICIENT_MIN_CHARS = 600
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}(?:\s*[-–]\s*\d{2,4})?")
 _INTENT_RULES = [
     (["merit"], "report"),
@@ -371,13 +380,23 @@ class RAGService:
 
         # 6. Optional live-web fallback (official pu.edu.pk only). Triggers
         #    ONLY when web search is enabled AND (a) PDF context is missing,
-        #    or (b) the question explicitly asks for current/latest info and
-        #    WEB_SEARCH_ON_RECENCY is true. Ordinary PDF-answerable questions
-        #    never touch the web. Any failure degrades to PDF-only/refusal.
+        #    or (b) the PDF evidence is sparse by the static sufficiency
+        #    heuristic, or (c) the question explicitly asks for current/latest
+        #    information and WEB_SEARCH_ON_RECENCY is true. Ordinary
+        #    PDF-answerable questions never touch the web. Any failure degrades
+        #    to PDF-only/refusal. At most ONE search runs per request — a
+        #    sufficiency-triggered search never double-fires the recency path.
         web_sources: list[WebSource] = []
+        sparse_context = not self._pdf_sufficient(kept) if kept else True
         if self._web_enabled():
             if not kept:
-                logger.info("web search trigger=pdf_missing")
+                reason = "pdf_missing"
+            elif sparse_context:
+                reason = "sparse_pdf"
+            else:
+                reason = None
+            if reason is not None:
+                logger.info("web search trigger=%s", reason)
                 web_sources = self._safe_web_search(question)
             elif settings.web_search_on_recency and self._wants_current_info(question):
                 logger.info("web search trigger=recency")
@@ -390,7 +409,7 @@ class RAGService:
         sources += [self._web_rag_source(source) for source in web_sources]
 
         # 7. Grounded prompt (PDF and/or live official-PU web excerpts)
-        user_prompt = self._build_prompt(question, kept, web_sources)
+        user_prompt = self._build_prompt(question, kept, web_sources, sparse_context=sparse_context)
         logger.info("groq prompt: pdf_blocks=%d web_blocks=%d", len(kept), len(web_sources))
 
         # 8. Generate (exactly one call — the web fallback never adds a second)
@@ -427,6 +446,25 @@ class RAGService:
         return RAGResult(STATUS_ANSWERED, answer, sources, None)
 
     # ---------- live web fallback ----------
+
+    @staticmethod
+    def _pdf_sufficient(kept) -> bool:
+        """Conservative sufficiency heuristic — NOT proof of completeness.
+
+        Strong enough for the no-fallback path only when at least one chunk
+        is kept, the best ORIGINAL distance is <= PDF_SUFFICIENT_BEST_DISTANCE
+        and the combined retrieved text length is at least
+        PDF_SUFFICIENT_MIN_CHARS. Boost-adjusted distances are irrelevant here;
+        the threshold constant for admission is untouched.
+        """
+        if not kept:
+            return False
+        distances = [distance for _document, _metadata, distance, _adjusted in kept
+                     if distance is not None]
+        if not distances:
+            return False
+        total_chars = sum(len(document or "") for document, _metadata, _distance, _adjusted in kept)
+        return min(distances) <= PDF_SUFFICIENT_BEST_DISTANCE and total_chars >= PDF_SUFFICIENT_MIN_CHARS
 
     @staticmethod
     def _web_enabled() -> bool:
@@ -588,7 +626,7 @@ class RAGService:
         return list(seen.values())
 
     @staticmethod
-    def _build_prompt(question: str, kept, web_sources=None) -> str:
+    def _build_prompt(question: str, kept, web_sources=None, sparse_context: bool = False) -> str:
         web_sources = list(web_sources or [])
         parts = [
             "Answer the question using ONLY the retrieved University of the Punjab "
@@ -622,6 +660,13 @@ class RAGService:
                 f"{source.content}\n"
             )
         parts.append("--- End of context ---\n")
+        if sparse_context:
+            parts.append(
+                "Evidence note: the retrieved PDF excerpts may be thin or incomplete for this question. "
+                "State plainly what they do and do not establish; never present unsupported figures as fact. "
+                "Attribute PDF-derived figures to the source PDF filename and session printed in its header, "
+                "and PU-website content to the PU website (pu.edu.pk).\n"
+            )
         parts.append(f"Question: {question}")
         return "\n".join(parts)
 

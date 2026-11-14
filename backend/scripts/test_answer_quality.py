@@ -152,7 +152,14 @@ try:
             self.calls.append(prompt)
             return GOOD_MARKDOWN_ANSWER
 
-    rag = _R(llm=RecordingLLM())
+    class FakeWebSearch:
+        """Hermetic: the live-knowledge-base check above must stay offline."""
+
+        def search(self, query, **kwargs):
+            from app.services.web_search_service import WebSearchResult
+            return WebSearchResult(results=[])
+
+    rag = _R(llm=RecordingLLM(), web_search=FakeWebSearch())
     result = rag.answer("What is the minimum attendance requirement?")
     if result.answer == GOOD_MARKDOWN_ANSWER:
         ok("markdown content passes through byte-identically to the client")

@@ -281,7 +281,14 @@ try:
         def generate(self, prompt, system=None, timeout=None):
             raise GroqRateLimitError("Groq responded with HTTP 429.")
 
-    rag = RAGService(chroma=chroma, llm=FailingGroq())
+    class FakeWebSearch:
+        """Hermetic: never performs network calls."""
+
+        def search(self, query, **kwargs):
+            from app.services.web_search_service import WebSearchResult
+            return WebSearchResult(results=[])
+
+    rag = RAGService(chroma=chroma, llm=FailingGroq(), web_search=FakeWebSearch())
     result = rag.answer("What is the attendance requirement?")
     if result.status == "error":
         ok("RAG failure path -> status='error'")

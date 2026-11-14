@@ -132,7 +132,15 @@ def official_web_source(content: str, url: str = "https://www.pu.edu.pk/admissio
                      content=content, score=0.9, published_date=published)
 
 
-PDF_DOC = "Dues 2026-27 schedule. BS regular first-semester total due is Rs. 15,000."
+# Strong PDF evidence fixture: distance 0.2 AND comfortably above the >=600-char
+# sufficiency floor, modelling what an answered-from-the-KB question looks like.
+PDF_DOC = (
+    "Dues 2026-27 schedule. BS regular first-semester total due is Rs. 15,000. "
+    "Service Charges are Rs. 8,500. Examination Fee is Rs. 4,800. "
+    "Sports & Mosque Fund is Rs. 950 in the Fall semester only. "
+    "Registration Fee Rs. 9,000, PU Development Fund Rs. 500 and Library Security "
+    "Rs. 5,000 (refundable). Dues must be submitted within two weeks of admission. "
+) * 6
 PDF_META = {"filename": "Dues-Fee-Schedule-for-the-Year-2026-27.pdf", "page_number": 2,
             "chunk_index": 0, "category": "fees", "document_type": "fee schedule",
             "effective_session": "2026-27", "verification_status": "verified"}

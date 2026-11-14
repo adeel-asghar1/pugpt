@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 from app.prompts import PUGPT_SYSTEM_PROMPT
 from app.services.rag_service import RAGService
+from app.services.web_search_service import WebSearchResult
 
 failures = 0
 
@@ -99,7 +100,13 @@ try:
         def generate(self, prompt, system=None, timeout=None):
             return GOOD_ANSWER
 
-    rag = RAGService(chroma=chroma, llm=SourcesFreeLLM())
+    class FakeWebSearch:
+        """Hermetic: this test never performs network calls."""
+
+        def search(self, query, **kwargs):
+            return WebSearchResult(results=[])
+
+    rag = RAGService(chroma=chroma, llm=SourcesFreeLLM(), web_search=FakeWebSearch())
     result = rag.answer(shared_text)
 
     if result.answer == GOOD_ANSWER:

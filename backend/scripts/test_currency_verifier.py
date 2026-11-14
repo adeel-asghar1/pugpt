@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.services.rag_service import RAGService, find_unsupported_claims
+from app.services.web_search_service import WebSearchResult
 
 failures = 0
 
@@ -260,6 +261,21 @@ class _FakeChroma:
         return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
 
 
+class _FakeWebSearch:
+    """Hermetic: records queries; never performs network calls."""
+
+    def __init__(self, results=None, raise_exc=None):
+        self.results = results or []
+        self.raise_exc = raise_exc
+        self.calls = []
+
+    def search(self, query, **kwargs):
+        self.calls.append(query)
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return WebSearchResult(results=list(self.results))
+
+
 class _RecordingLLM:
     def __init__(self, answer):
         self.answer = answer
@@ -271,7 +287,8 @@ class _RecordingLLM:
 
 
 _rag = RAGService(embeddings=_FakeEmbedding(), chroma=_FakeChroma(),
-                  llm=_RecordingLLM(GOOD_BS_CS_ANSWER))
+                  llm=_RecordingLLM(GOOD_BS_CS_ANSWER),
+                  web_search=_FakeWebSearch())
 _result = _rag.answer("give fee structure of bs cs")
 if _result.status == "answered":
     ok("grounded BS CS fee answer returns STATUS_ANSWERED (not no_relevant_context)")
