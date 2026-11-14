@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/ directory, resolved relative to this file so paths work
@@ -110,6 +111,15 @@ class Settings(BaseSettings):
 
     # Ingestion: chunks embedded per Ollama /api/embed request
     ingestion_batch_size: int = 16
+
+    @field_validator("groq_api_key", "tavily_api_key", mode="before")
+    @classmethod
+    def _strip_key_outer_whitespace(cls, v):
+        # Render's dashboard stores env vars verbatim; pasted keys can carry a
+        # trailing newline. Normalize OUTER whitespace only at the boundary —
+        # embedded characters are rejected by the service layer, and a
+        # leading "Bearer " is deliberately NOT removed (reported, not guessed).
+        return v.strip() if isinstance(v, str) else v
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

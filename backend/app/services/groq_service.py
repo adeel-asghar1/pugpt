@@ -120,12 +120,24 @@ class GroqService:
                 "Groq API key is not configured (GROQ_API_KEY is missing or empty)."
             )
 
+        # Outer whitespace/newlines (e.g. dashboard paste artifacts) are
+        # normalized here so the header stays legal. Anything remaining that
+        # is not printable ASCII can never produce a legal Authorization
+        # header — fail fast with a generic, key-free message instead of
+        # letting h11 reject the request client-side (LocalProtocolError).
+        key = self.api_key.strip()
+        if not all(33 <= ord(c) <= 126 for c in key):
+            raise GroqError(
+                "Groq API key is misconfigured (contains whitespace or invalid "
+                "characters). Fix GROQ_API_KEY in the environment."
+            )
+
         effective_timeout = timeout if timeout is not None else self.timeout
         messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}
         ]
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
         payload = {
