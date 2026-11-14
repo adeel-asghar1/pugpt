@@ -349,8 +349,16 @@ body {
   padding: 1.4rem 1.25rem 1.1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 1.05rem;
+  /* Hidden visually, never from the user: wheel, trackpad, keyboard and
+     touch scrolling all remain functional. */
+  scrollbar-width: none;      /* Firefox */
+  -ms-overflow-style: none;   /* legacy Edge / IE */
 }
+.stream::-webkit-scrollbar { display: none; width: 0; height: 0; } /* Chrome / Edge / Safari */
+/* A user message that is not the first item opens a new turn — give turns
+   extra breathing room while the question↔answer pair stays associated. */
+.stream > .msg-user:not(:first-child) { margin-top: 0.8rem; }
 .msg { display: flex; gap: 0.6rem; animation: rise var(--dur-slow) var(--ease) both; }
 .msg-assistant { align-items: flex-start; }
 .msg-user { justify-content: flex-end; }
@@ -733,7 +741,8 @@ body {
   .landing-sub { font-size: 0.84rem; }
   .suggestion-grid { grid-template-columns: 1fr; gap: 0.42rem; }
   .suggestion-card { padding: 0.55rem 0.62rem; }
-  .stream { padding: 1rem 0.65rem 0.85rem; gap: 0.8rem; }
+  .stream { padding: 1rem 0.65rem 0.85rem; gap: 0.9rem; }
+  .stream > .msg-user:not(:first-child) { margin-top: 0.6rem; }
   .user-bubble { max-width: 88%; }
   .assistant-panel { padding: 0.72rem 0.8rem 0.65rem; }
   .composer-note { font-size: 0.51rem; }
