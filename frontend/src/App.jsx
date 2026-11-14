@@ -39,21 +39,34 @@ export default function App() {
     }
   }
 
+  const isLanding = messages.length === 0 && !isLoading && !error
+
+  const composer = (
+    <>
+      <ChatInput onSend={handleSend} isLoading={isLoading} />
+      <p className="composer-note">Official university documents · Page-linked citations</p>
+    </>
+  )
+
   return (
     <div className="app-shell">
       <Header />
-      <main className="flex-1 overflow-y-auto">
-        <MessageList messages={messages} isLoading={isLoading} onAsk={handleSend} />
+      <main className="main-region">
+        {isLanding ? (
+          <div className="landing-flow">
+            <MessageList messages={messages} isLoading={isLoading} onAsk={handleSend} />
+            <div className="landing-composer">{composer}</div>
+          </div>
+        ) : (
+          <MessageList messages={messages} isLoading={isLoading} onAsk={handleSend} />
+        )}
       </main>
+      {!isLanding && (
+        <footer className="composer-wrap">
+          <div className="composer-inner">{composer}</div>
+        </footer>
+      )}
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
-      <footer className="composer-wrap">
-        <div className="composer-inner">
-          <ChatInput onSend={handleSend} isLoading={isLoading} />
-          <p className="composer-note">
-            PUGPT answers only about the University of the Punjab · Verify critical details with official sources · 10 questions/min · 500 questions/day · When live answers are needed, your question may be sent to Tavily (pu.edu.pk only)
-          </p>
-        </div>
-      </footer>
     </div>
   )
 }

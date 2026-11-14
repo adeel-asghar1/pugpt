@@ -1,14 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#FBF8EF" />
+    <meta name="theme-color" content="#f7f9f8" />
     <meta
       name="description"
       content="PUGPT — an AI assistant that answers questions about the University of the Punjab, Pakistan."
     />
+    <script>
+      // Set the theme before first paint to avoid a flash of the wrong palette.
+      (function () {
+        try {
+          var saved = localStorage.getItem('pugpt-theme')
+          var theme = saved === 'dark' || saved === 'light'
+            ? saved
+            : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          document.documentElement.setAttribute('data-theme', theme)
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light')
+        }
+      })()
+    </script>
     <title>PUGPT | University of the Punjab Assistant</title>
   </head>
   <body>

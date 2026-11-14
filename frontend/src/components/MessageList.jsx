@@ -3,100 +3,71 @@ import CapIcon from './CapIcon'
 import Message from './Message'
 
 const SUGGESTED_QUESTIONS = [
-  { label: 'What are the admission requirements for a BS programme?', question: 'What are the eligibility criteria for undergraduate admissions?' },
-  { label: 'What is the fee structure for BS Computer Science?', question: 'What is the fee structure of BS Computer Science?' },
-  { label: 'What are the closing merits for BS admissions in 2025?', question: 'What were the closing merits for BS admissions in 2025?' },
-  { label: 'How are GPA and CGPA calculated for Semester Rules?', question: 'What are the rules for calculating CGPA?' },
+  { tag: 'ADMISSIONS', label: 'What are the admission requirements for a BS programme?', question: 'What are the eligibility criteria for undergraduate admissions?' },
+  { tag: 'FEES', label: 'What is the fee structure for BS Computer Science?', question: 'What is the fee structure of BS Computer Science?' },
+  { tag: 'MERIT', label: 'What are the closing merits for BS admissions in 2025?', question: 'What were the closing merits for BS admissions in 2025?' },
+  { tag: 'ACADEMIC RULES', label: 'How are GPA and CGPA calculated for Semester Rules?', question: 'What are the rules for calculating CGPA?' },
 ]
 
-const INDEX = [
-  ['I', 'Admissions & Eligibility, 2026-27', 'eligibility'],
-  ['II', 'Fee / Dues Schedule, 2026-27', 'fees'],
-  ['III', 'Semester Rules, Undergraduate', 'rules'],
-  ['IV', 'Merit of Last Year — 2025', 'merit'],
-  ['V', 'Admission Regulations', 'policy'],
-]
-
-function WelcomePanel({ onAsk }) {
+function Landing({ onAsk }) {
   return (
-    <div className="welcome-grid">
-      <div className="welcome-main">
-        <div className="eyebrow rise rise-1">The University of the Punjab · Official assistant</div>
-        <h1 className="welcome-title rise rise-2">
-          Ask anything about <em>Punjab University.</em>
-        </h1>
-        <p className="welcome-sub rise rise-3">
-          Admissions, fee schedules, semester rules, eligibility and closing
-          merits — answered only from the University’s own official documents,
-          with every claim cited.
-        </p>
+    <div className="landing">
+      <p className="landing-pill rise rise-1">University of the Punjab · Official assistant</p>
 
-        <div className="welcome-rule rise rise-3" aria-hidden="true">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M7 1l1.6 3.9L12.6 6.4 8.8 8.3 7 12.4 5.2 8.3 1.4 6.4 5.4 4.9 7 1z"
-              stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" fill="var(--gold-tint)" />
-          </svg>
-        </div>
+      <h1 className="landing-title rise rise-2">
+        Ask anything about<br /><span className="landing-accent">Punjab University</span>.
+      </h1>
+      <p className="landing-sub rise rise-3">
+        Find answers about admissions, fees, academic rules and merit — grounded in official university documents.
+      </p>
 
-        <div className="suggestion-list rise rise-4">
-          {SUGGESTED_QUESTIONS.map((item, index) => (
-            <button
-              key={index}
-              type="button"
-              className="suggestion-row"
-              onClick={() => onAsk?.(item.question)}
-            >
-              <span className="suggestion-index">{String(index + 1).padStart(2, '0')}</span>
-              <span className="suggestion-text">{item.label}</span>
-              <span className="suggestion-arrow" aria-hidden="true">
-                <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M2.5 8h10M8.5 3.5 13 8l-4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-            </button>
-          ))}
-        </div>
-
-        <div className="welcome-footnote rise rise-5">Every answer cites its source document and page</div>
+      <p className="suggestion-heading rise rise-4">Explore popular questions</p>
+      <div className="suggestion-grid rise rise-4" role="list">
+        {SUGGESTED_QUESTIONS.map((item, index) => (
+          <button
+            key={index}
+            type="button"
+            role="listitem"
+            className="suggestion-card"
+            onClick={() => onAsk?.(item.question)}
+          >
+            <span className="suggestion-body">
+              <span className="suggestion-tag">{item.tag}</span>
+              <span className="suggestion-label">{item.label}</span>
+            </span>
+            <span className="suggestion-caret" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="15" height="15" fill="none">
+                <path d="M3 8h9M8.5 3.5 13 8l-4.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+          </button>
+        ))}
       </div>
 
-      <aside className="welcome-aside rise rise-5" aria-hidden="true">
-        <div className="index-card">
-          <div className="index-head">
-            <span className="index-title">INDEX</span>
-            <span className="index-meta">pugpt.knowledge</span>
-          </div>
-          {INDEX.map(([numeral, title, doc]) => (
-            <div key={numeral} className="index-item">
-              <span className="index-numeral">{numeral}</span>
-              <span>{title}</span>
-              <span className="index-dots" />
-              <span className="index-doc">{doc}</span>
-            </div>
-          ))}
-          <div className="index-foot">
-            <span>official pu.edu.pk</span>
-            <span>↓</span>
-          </div>
-        </div>
-      </aside>
+      <p className="landing-foot rise rise-5">
+        <svg viewBox="0 0 14 14" width="13" height="13" fill="none" aria-hidden="true">
+          <circle cx="7" cy="7" r="6.2" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M4.6 7.2 6.3 8.9 9.6 5.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        Every answer cites its source document and page
+      </p>
     </div>
   )
 }
 
 function TypingIndicator() {
   return (
-    <div className="msg-row">
+    <div className="msg msg-assistant">
       <div className="msg-avatar" aria-hidden="true">
         <CapIcon className="h-4 w-4" />
       </div>
-      <div>
-        <div className="typing-bubble" role="status" aria-label="PUGPT is thinking">
+      <div className="msg-body">
+        <div className="typing-sheet" role="status" aria-label="PUGPT is consulting official sources">
           <span className="typing-dot" />
           <span className="typing-dot" />
           <span className="typing-dot" />
+          <span className="typing-label">Consulting official sources…</span>
         </div>
-        <div className="typing-note">Consulting official sources…</div>
       </div>
     </div>
   )
@@ -110,16 +81,11 @@ export default function MessageList({ messages, isLoading, onAsk }) {
   }, [messages, isLoading])
 
   if (messages.length === 0 && !isLoading) {
-    return <WelcomePanel onAsk={onAsk} />
+    return <Landing onAsk={onAsk} />
   }
 
   return (
-    <div
-      className="stream"
-      aria-live="polite"
-      aria-relevant="additions"
-      aria-atomic="false"
-    >
+    <div className="stream" aria-live="polite" aria-relevant="additions" aria-atomic="false">
       {messages.map((message) => (
         <Message
           key={message.id}
