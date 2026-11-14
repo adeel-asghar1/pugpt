@@ -47,8 +47,9 @@ jobs:
       - name: Verify /api/health reports FastEmbed (no LLM call)
         run: |
           python - <<'PY'
-          import json, urllib.request
-          h = json.load(urllib.request.urlopen(f"http://127.0.0.1:$HOST_PORT/api/health"))
+          import json, os, urllib.request
+          port = os.environ.get("HOST_PORT", "8080")
+          h = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health"))
           assert h.get("status") == "ok", h
           e = h.get("embedding") or {}
           assert e.get("provider") == "fastembed", e
