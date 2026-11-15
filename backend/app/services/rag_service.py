@@ -67,7 +67,66 @@ BOOST_FACTOR = 0.75
 # additional post-retrieval sufficiency signal, not a relevance filter.
 PDF_SUFFICIENT_BEST_DISTANCE = 0.35
 PDF_SUFFICIENT_MIN_CHARS = 600
+# Question-to-evidence relevance floor: at least this fraction of the question's
+# content terms must appear in the kept evidence (whole normalized tokens).
+# Conservative on purpose: a zero match or sub-third coverage classifies as
+# sparse, routing to the fallback; anything better keeps PDF-only behaviour.
+# This heuristic exists to catch "substantial but clearly unrelated" PDFs
+# (e.g. admissions text vs a question about campus closures) — it cannot
+# prove completeness, only relevance. On ANY internal failure it reports
+# "relevant" (i.e. no extra Tavily calls are introduced by errors).
+PDF_RELEVANCE_MIN_COVERAGE = 0.34
+# AND at least this many substantive matched terms must hit. Arbitrary coverage
+# ratios cannot be trusted for short questions — one accurate hit is never proof
+# that the evidence is on topic.
+PDF_RELEVANCE_MIN_SUBSTANTIVE_HITS = 2
+# A single substantive term that is ubiquitous across the official PU corpus —
+# it appears in nearly every admissions, fee, merit and rules PDF — carries no
+# discriminative value. A lone hit on one of these words proves nothing about
+# whether the evidence is on point for the question. Single-term questions in
+# this vocabulary are classified insufficient and route to sparse_pdf fallback.
+_GENERIC_SINGLE_TERMS = frozenset({
+    "admission", "admissions", "merit", "schedule",
+    "programme", "programmes", "session", "dues",
+})
+# A lone 'fee' question is only judged relevant when the kept evidence carries
+# at least one currency-anchored fee figure associated with a fee-related term
+# within a small local context (e.g. 'Tuition fee: Rs. 45,000', 'Admission fee
+# Rs. 10,000', 'The fee is Rs. 9,000'). Deterministic, bounded-window check:
+# find a fee-related word (fee/fees/tuition/dues) and look within a ~48-char
+# window either side for a Rs. amount. No LLM, no positional parsing, no broad
+# keyword lists.
+_FEE_WORD_RE = re.compile(r"\b(?:fees?|tuition|dues)\b", re.IGNORECASE)
+_FEE_AMOUNT_RE = re.compile(r"rs\.?[\s,]*\d[\d,\.]{1,}", re.IGNORECASE)
+_FEE_CONTEXT_SPAN = 48  # characters to inspect on either side of the fee word
+
+
+def _fee_anchor_present(text: str) -> bool:
+    """True when 'text' contains a fee-related word with a Rs. amount close by."""
+    for fee_match in _FEE_WORD_RE.finditer(text):
+        start = fee_match.start()
+        end = fee_match.end()
+        window = text[max(0, start - _FEE_CONTEXT_SPAN):end + _FEE_CONTEXT_SPAN]
+        if _FEE_AMOUNT_RE.search(window):
+            return True
+    return False
 _YEAR_RE = re.compile(r"(?:19|20)\d{2}(?:\s*[-–]\s*\d{2,4})?")
+# Word tokenizer used by the relevance check. Keeps hyphens inside tokens
+# ("2026-27") and strips most punctuation implicitly.
+_WORD_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# Common English function words — a compact, deliberate list. PU-filler words
+# (corpus-wide neutral terms) are included as stopwords because they carry no
+# discriminative value across the official-PU corpus.
+_STOPWORDS = frozenset(
+    "a an the and or but of in on at to for with from by as is are was were be been being am do does did doing "
+    "have has had having i me my we our you your he she his her it its they them their this that these those there "
+    "here what which who whom whose when where why how all any both each few more most other some such no nor not "
+    "only own same so than too very can will just should now also than then into over under again further once "
+    "about above below between through during before after against between during before after against during "
+    "would could should must may might must shall per via University PU official website ask asked tell give know "
+    "want need find include mention describe explain summarize summary please provide latest current currently "
+    "recent recently today now newly".split()
+)
 _INTENT_RULES = [
     (["merit"], "report"),
     (["fee", "fees", "dues", "challan"], "fee schedule"),
@@ -254,6 +313,109 @@ def _detect_intent(question: str) -> str | None:
 # _CURRENT_INFO_MARKERS: question phrases that explicitly ask for live/current
 # information. Used ONLY to decide whether a fallback web search may run when
 # PDF context exists — ordinary questions never trigger the web.
+def _norm_token(token: str) -> str:
+    """Normalize a token: lowercase, strip a leading apostrophe-s, then strip at
+    most one trailing inflection (ies/ing/ed/es/s/ly) with a minimum stem length
+    of 3. Intended only for the relevance check, never for claims/verifier."""
+    if token.endswith("'s"):
+        token = token[:-2]
+    for suffix in ("ies", "ing", "ed", "s", "ly", "es"):
+        stem = token[: -len(suffix)]
+        if token.endswith(suffix) and len(stem) >= 3:
+            return stem
+    return token
+
+
+def _is_date_like(token: str) -> bool:
+    """A date/numeric-only token (no letters at all): years, session ranges and
+    bare numbers like '15', '2026-27', '2026-11'. Such tokens NEVER count toward
+    substantive relevance hits."""
+    return not any(ch.isalpha() for ch in token)
+
+
+def _question_content_terms(question: str) -> list[str]:
+    """Distinct normalized content terms from the question (stopwords removed)."""
+    terms: list[str] = []
+    for raw in _WORD_RE.findall((question or "").lower()):
+        token = _norm_token(raw)
+        if len(token) < 3:
+            continue
+        if token in _STOPWORDS:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms
+
+
+def _evidence_token_set(kept) -> set:
+    """Normalized token set of the kept evidence text ONLY (filenames excluded —
+    a filename like 'Dues-Fee-Schedule…' must not inflate relevance)."""
+    tokens: set = set()
+    for item in kept:
+        document = item[0] if isinstance(item, (tuple, list)) else None
+        for raw in _WORD_RE.findall(str(document or "").lower()):
+            token = _norm_token(raw)
+            if len(token) >= 3:
+                tokens.add(token)
+    return tokens
+
+
+def _evidence_relevance(kept, question: str):
+    """Conservative question-to-evidence relevance (lexical, not semantic).
+
+    Returns (relevant: bool, hits: int, substantive_total: int, tag: str, date_terms: int)
+
+    `relevant` is True when the decision is unavailable, so the system falls
+    back to NOT calling the web for this signal:
+    - No content terms at all                 -> tag='no_content_terms'
+    - All content terms are date/numeric-only  -> tag='date_only_terms'
+    - Any internal error                       -> tag='ok' (fail safe, no web trigger)
+
+    Otherwise the gate requires ALL of:
+    - len(substantive) == 1: its lone term must match, AND the term is NOT a
+      ubiquitous PU vocabulary token (single_generic_term), AND, when the term
+      is 'fee', the kept evidence must carry a fee-related word with a
+      currency amount locally associated (bounded window) — "Fee?" against
+      generic fee-free evidence is not proof.
+    - multi-term questions: hits >= PDF_RELEVANCE_MIN_SUBSTANTIVE_HITS (>= 2
+      substantive hits), AND
+    AND in both cases:
+    - hits / len(substantive terms) >= PDF_RELEVANCE_MIN_COVERAGE (>= 0.34,
+      dates excluded from both the numerator and the ratio).
+    """
+    try:
+        terms = _question_content_terms(question)
+        if not terms:
+            return True, 0, 0, "no_content_terms", 0
+        substantive = [t for t in terms if not _is_date_like(t)]
+        date_terms = len(terms) - len(substantive)
+        if not substantive:
+            return True, 0, 0, "date_only_terms", date_terms
+        evidence = _evidence_token_set(kept)
+        hits = sum(1 for term in substantive if term in evidence)
+        if len(substantive) == 1:
+            term = substantive[0]
+            if term in _GENERIC_SINGLE_TERMS:
+                # Ubiquitous PU vocabulary: one match proves nothing.
+                return False, hits, 1, "single_generic_term", date_terms
+            if term == "fee":
+                # Lone 'fee' needs an amount locally associated with a
+                # fee-related term (bounded window either side of the fee word).
+                evidence_text = " ".join(str(item[0] or "") for item in kept)
+                fee_ok = _fee_anchor_present(evidence_text)
+                return (fee_ok, hits, 1, "ok" if fee_ok else "no_fee_anchor", date_terms)
+            needed = 1
+        else:
+            needed = PDF_RELEVANCE_MIN_SUBSTANTIVE_HITS
+        relevant = (
+            hits >= needed
+            and (hits / len(substantive)) >= PDF_RELEVANCE_MIN_COVERAGE
+        )
+        return relevant, hits, len(substantive), "ok", date_terms
+    except Exception:  # noqa: BLE001 — wiring failures must never trigger the web
+        return True, 0, 0, "ok", 0
+
+
 _CURRENT_INFO_MARKERS = (
     "latest",
     "current",
@@ -380,27 +542,62 @@ class RAGService:
 
         # 6. Optional live-web fallback (official pu.edu.pk only). Triggers
         #    ONLY when web search is enabled AND (a) PDF context is missing,
-        #    or (b) the PDF evidence is sparse by the static sufficiency
-        #    heuristic, or (c) the question explicitly asks for current/latest
-        #    information and WEB_SEARCH_ON_RECENCY is true. Ordinary
-        #    PDF-answerable questions never touch the web. Any failure degrades
-        #    to PDF-only/refusal. At most ONE search runs per request — a
-        #    sufficiency-triggered search never double-fires the recency path.
+        #    or (b) the PDF evidence is sparse (existing 0.35/600 checks fail,
+        #    or the question-to-evidence relevance check finds the material
+        #    substantially off-topic), or (c) the question explicitly asks for
+        #    current/latest information and WEB_SEARCH_ON_RECENCY is true.
+        #    Ordinary PDF-answerable questions never touch the web. Any failure
+        #    degrades to PDF-only/refusal. At most ONE search runs per request.
         web_sources: list[WebSource] = []
-        sparse_context = not self._pdf_sufficient(kept) if kept else True
-        if self._web_enabled():
-            if not kept:
-                reason = "pdf_missing"
-            elif sparse_context:
-                reason = "sparse_pdf"
-            else:
-                reason = None
-            if reason is not None:
-                logger.info("web search trigger=%s", reason)
-                web_sources = self._safe_web_search(question)
-            elif settings.web_search_on_recency and self._wants_current_info(question):
-                logger.info("web search trigger=recency")
-                web_sources = self._safe_web_search(question)
+        if kept:
+            distances = [distance for _document, _metadata, distance, _adjusted in kept
+                         if distance is not None]
+            total_chars = sum(len(document or "") for document, _metadata, _distance, _adjusted in kept)
+            best_distance = min(distances) if distances else None
+            distance_ok = best_distance is not None and best_distance <= PDF_SUFFICIENT_BEST_DISTANCE
+            chars_ok = total_chars >= PDF_SUFFICIENT_MIN_CHARS
+            relevant, hits, substantive_total, relevance_tag, date_terms = _evidence_relevance(kept, question)
+            sufficient = distance_ok and chars_ok and relevant
+        else:
+            best_distance = None
+            total_chars = 0
+            distance_ok = False
+            chars_ok = False
+            relevant, hits, substantive_total, relevance_tag, date_terms = _evidence_relevance([], question)
+            sufficient = False
+        logger.info(
+            "pdf evidence: kept=%d best_distance=%s total_chars=%d distance_ok=%s "
+            "chars_ok=%s relevance_unavailable=%s relevance_hits=%d/%d date_terms=%d "
+            "sufficient=%s web_enabled=%s",
+            len(kept),
+            f"{best_distance:.4f}" if best_distance is not None else "n/a",
+            total_chars,
+            distance_ok,
+            chars_ok,
+            relevance_tag if relevance_tag != "ok" else "none",
+            hits,
+            substantive_total,
+            date_terms,
+            sufficient,
+            self._web_enabled(),
+        )
+        sparse_context = not sufficient
+
+        reason = None
+        if not self._web_enabled():
+            logger.info("web fallback: not taken (web disabled)")
+        elif not kept:
+            reason = "pdf_missing"
+        elif sparse_context:
+            reason = "sparse_pdf"
+        elif settings.web_search_on_recency and self._wants_current_info(question):
+            reason = "recency"
+
+        if reason is not None:
+            logger.info("web search trigger=%s", reason)
+            web_sources = self._safe_web_search(question)
+        elif self._web_enabled():
+            logger.info("web fallback: not taken (evidence sufficient)")
 
         if not kept and not web_sources:
             return RAGResult(STATUS_NO_CONTEXT, NO_CONTEXT_ANSWER, [], None)

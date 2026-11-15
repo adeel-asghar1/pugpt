@@ -46,5 +46,19 @@ Tavily free tier = 1,000 credits/month (basic depth, 1 credit per search). Autom
 
 ### Rollback
 
-Setting `WEB_SEARCH_ENABLED=false` restores exact pre-Step-16 retrieval/answer behaviour. The sufficiency heuristic's constants (`PDF_SUFFICIENT_BEST_DISTANCE=0.35`, `PDF_SUFFICIENT_MIN_CHARS=600`) live in `backend/app/services/rag_service.py` for tuning with real usage.
+Setting `WEB_SEARCH_ENABLED=false` restores exact pre-Step-16 retrieval/answer behaviour. The sufficiency heuristic's constants (`PDF_SUFFICIENT_BEST_DISTANCE=0.35`, `PDF_SUFFICIENT_MIN_CHARS=600`, `PDF_RELEVANCE_MIN_COVERAGE=0.34`, `PDF_RELEVANCE_MIN_SUBSTANTIVE_HITS=2`) live in `backend/app/services/rag_service.py` for tuning with real usage.
+
+---
+
+## 20. Limitations of the relevance gate (Steps 18C–18E)
+
+The question-to-evidence relevance signal used for the official-PU web fallback is a **lexical** heuristic, not a semantic judge. It exists to catch substantially off-topic evidence (e.g. admission PDFs versus a question about campus closures), not to prove answer completeness.
+
+Known limitations:
+- **Single-term questions** whose lone content word is ubiquitous PU vocabulary (admission, admissions, merit, schedule, programme, programmes, session, dues) are classified insufficient regardless of any match — such evidence is not proof of relevance. A lone `fee` question is judged relevant only when the kept evidence carries a currency-anchored fee figure (e.g. `Rs. 15,000`).
+- **Synonyms are not bridged** — "closure" vs "holiday", "application" vs "admission" will not cross-match.
+- **Urdu-only questions yield zero English content terms**; they are deliberately treated as "relevance unavailable" (safe: no extra Tavily call, PDF-only answer). Mixed Urdu/English questions work off their English tokens only.
+- **Generic PU vocabulary** ("admission", "merit", "programme", "schedule") can match admission-family questions regardless of whether the evidence is on point for the specific sub-topic asked.
+- **The 0.34 coverage floor is a heuristic** and does not constitute proof of answer completeness. Distance and length gates (0.35 / 600 chars) still apply on top of it.
+- Dates/numeric tokens ("2026", "2026-27") are excluded from substantive counting by design; a question consisting only of date tokens is treated as "relevance unavailable" (no extra Tavily call).
 
