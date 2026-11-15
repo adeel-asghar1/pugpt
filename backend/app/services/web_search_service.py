@@ -24,6 +24,8 @@ Design contract:
 """
 
 import logging
+import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -86,6 +88,91 @@ class WebSearchResult:
     credits_used: int | None = None
 
 
+_MONTH_TOKENS = frozenset(
+    "january february march april may june july august september october november december "
+    "jan feb mar apr jun jul aug sep sept oct nov dec".split()
+)
+
+
+_PUGPT_STOPWORDS = frozenset(
+    "a an the and or but of in on at to for with from by as is are was were be been being am "
+    "do does did doing have has had having i me my we our you your he she his her it its they them "
+    "their this that these those there here what which who whom whose when where why how all any "
+    "both each few more most other some such no nor not only own same so than too very can will "
+    "just should now also then into over under again further once about above below between "
+    "through during before after against would could should must may might must shall "
+    "per via university pu official website ask asked tell give know want need find include "
+    "mention describe explain summarize summary please provide latest current currently recent "
+    "recently updated today now newly pu punjab".split()
+)
+_WORD_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def _norm_token(token: str) -> str:
+    """Lowercase, strip a leading apostrophe-s, then strip at most one trailing
+    inflection (ies/ing/ed/es/s/ly) with a minimum stem length of 3."""
+    if token.endswith("'s"):
+        token = token[:-2]
+    for suffix in ("ies", "ing", "ed", "s", "ly", "es"):
+        stem = token[: -len(suffix)]
+        if token.endswith(suffix) and len(stem) >= 3:
+            return stem
+    return token
+
+
+def _split_token(raw: str):
+    """Yield every hyphenated sub-token from a raw whitespace token."""
+    return [p for p in raw.split("-") if p]
+
+
+def _token_set(text) -> set:
+    tokens: set = set()
+    for raw in _WORD_RE.findall((text or "").lower()):
+        for part in _split_token(raw):
+            token = _norm_token(part)
+            if len(token) >= 3:
+                tokens.add(token)
+    return tokens
+
+
+def _question_content_terms(question: str) -> list[str]:
+    """Distinct content terms (non-stopword, non-date, non-month, len>=3)."""
+    terms: list[str] = []
+    for raw in _WORD_RE.findall((question or "").lower()):
+        for part in _split_token(raw):
+            token = _norm_token(part)
+            if len(token) < 3:
+                continue
+            if token in _PUGPT_STOPWORDS:
+                continue
+            if token in _MONTH_TOKENS:
+                continue  # months never contribute to topical relevance
+            if not any(ch.isalpha() for ch in token):
+                continue  # date-like / pure-numeric tokens do not count
+            if token not in terms:
+                terms.append(token)
+    return terms
+
+
+def _web_relevant(source: "WebSource", question: str) -> tuple[bool, int, int]:
+    """Conservative lexical relevance gate.
+
+    Returns (relevant, hits, total_terms). Rejects unrelated official-PU pages.
+    Pure date/month-only overlap never passes; generic PU vocabulary alone never passes.
+    """
+    terms = _question_content_terms(question)
+    total = len(terms)
+    if total == 0:
+        # No content signal to judge against: do not attach dubiously-claimed web evidence.
+        return False, 0, 0
+    evidence_text = f"{source.title or ''} {source.content or ''}"
+    ev_tokens = _token_set(evidence_text)
+    hits = sum(1 for term in terms if term in ev_tokens)
+    if total == 1:
+        return hits >= 1, hits, total
+    return hits >= 2, hits, total
+
+
 def validated_host(url: str, allowed_suffixes: list[str]) -> str | None:
     """Return the URL's lowercase host iff it is trusted, else None.
 
@@ -138,6 +225,13 @@ class WebSearchService:
         # Provider-side domain filter is a hint; server-side validation governs
         # trust. include_domains_mode stays at its default ("restrict").
         self.search_url = self._search_url(self.base_url)
+        # One lazily-created HTTPX client per service instance, shared across
+        # concurrent requests. Created under a lock so races cannot produce
+        # duplicate clients; closed by the app's shutdown lifespan/test cleanup.
+        # httpx.Client pools keep-alive connections and is thread-safe for
+        # concurrent sync use — a TCP+TLS handshake per search is avoided.
+        self._shared_client: httpx.Client | None = None
+        self._client_lock = threading.Lock()
 
     @staticmethod
     def _search_url(raw_base_url: str) -> str:
@@ -154,8 +248,33 @@ class WebSearchService:
             url = url[: -len(marker)].rstrip("/")
         return f"{url}{marker}"
 
-    def _client(self, effective_timeout: float) -> httpx.Client:
-        return httpx.Client(timeout=effective_timeout, transport=self.transport)
+    def _get_client(self) -> httpx.Client:
+        """Return the shared client, creating it on first use.
+
+        Per-request timeouts are passed on each call, so sharing the client
+        never weakens per-call timeout semantics.
+        """
+        with self._client_lock:
+            if self._shared_client is None or self._shared_client.is_closed:
+                self._shared_client = httpx.Client(
+                    timeout=self.timeout,
+                    transport=self.transport,
+                    limits=httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                    ),
+                )
+            return self._shared_client
+
+    def close(self) -> None:
+        """Close the shared client and drop the reference (process shutdown/test cleanup)."""
+        with self._client_lock:
+            client, self._shared_client = self._shared_client, None
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+                logger.warning("Tavily client close failed: %s", type(exc).__name__)
 
     @property
     def configured(self) -> bool:
@@ -202,8 +321,13 @@ class WebSearchService:
             "Content-Type": "application/json",
         }
         try:
-            with self._client(effective_timeout) as client:
-                response = client.post(self.search_url, json=payload, headers=headers)
+            client = self._get_client()
+            response = client.post(
+                self.search_url,
+                json=payload,
+                headers=headers,
+                timeout=effective_timeout,
+            )
         except httpx.TimeoutException as exc:
             raise WebSearchTimeoutError(
                 f"Tavily did not respond within {effective_timeout}s."
@@ -234,39 +358,51 @@ class WebSearchService:
             raise WebSearchResponseError("Tavily returned an unexpected response format.") from exc
 
         results: list[WebSource] = []
+        rejected_relevance = 0
+        rejected_domain_content = 0
         for item in raw_results:
             if not isinstance(item, dict):
                 continue
             url = str(item.get("url") or "").strip()
             host = validated_host(url, self.allowed_suffixes)
             if host is None:
+                rejected_domain_content += 1
                 # Unofficial / lookalike / malformed URL — rejected server-side.
                 continue
             content = str(item.get("content") or "").strip()
             if not content:
+                rejected_domain_content += 1
+                # Empty content — rejected.
                 continue
-            published = item.get("published_date")
-            published_date = str(published).strip() if published else None
-            title = str(item.get("title") or "").strip() or host
-            score = item.get("score")
-            results.append(
-                WebSource(
-                    title=title,
-                    url=url,
-                    host=host,
-                    content=content,
-                    score=float(score) if isinstance(score, (int, float)) else None,
-                    published_date=published_date or None,
-                )
+            # Query-relevance gate: drop official-but-off-topic pages before they
+            # reach the LLM or citations (e.g. webinars or syllabi for a
+            # closure question). Conservative; requires >=2 substantive hits
+            # (or the single term of a one-term question).
+            candidate = WebSource(
+                title=str(item.get("title") or "").strip() or host,
+                url=url,
+                host=host,
+                content=content,
+                score=(float(item["score"]) if isinstance(item.get("score"), (int, float)) else None),
+                published_date=str(item.get("published_date") or "").strip() or None,
             )
+            relevant, hits, total_terms = _web_relevant(candidate, question)
+            if not relevant:
+                rejected_relevance += 1
+                continue
+            results.append(candidate)
 
         # Diagnosability, privacy-conscious: query length + a short truncated
         # preview only (never the full question, key or headers).
         logger.info(
-            "tavily search ok: query_len=%d query_preview=%r results_received=%d",
+            "tavily search ok: query_len=%d query_preview=%r results_received=%d "
+            "domain_or_content_rejected=%d relevance_rejected=%d retained=%d",
             len(question),
             question[:32],
             len(raw_results),
+            rejected_domain_content,
+            rejected_relevance,
+            len(results),
         )
         for index, source in enumerate(results):
             logger.info(

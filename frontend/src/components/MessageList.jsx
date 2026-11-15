@@ -73,6 +73,21 @@ function TypingIndicator() {
   )
 }
 
+function VerifyingIndicator() {
+  return (
+    <div className="msg msg-assistant">
+      <div className="msg-avatar" aria-hidden="true">
+        <CapIcon className="h-4 w-4" />
+      </div>
+      <div className="msg-body">
+        <div className="typing-sheet" role="status" aria-label="Checking answer against sources">
+          <span className="typing-label">Checking answer against sources…</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function MessageList({ messages, isLoading, onAsk }) {
   const bottomRef = useRef(null)
 
@@ -84,17 +99,36 @@ export default function MessageList({ messages, isLoading, onAsk }) {
     return <Landing onAsk={onAsk} />
   }
 
+  const lastMessage = messages[messages.length - 1]
+  const lastIsAssistant = lastMessage?.role === 'assistant'
+  const lastAssistantVerifying = Boolean(lastIsAssistant && lastMessage.verifying)
+  const typingVisible = isLoading && !(
+    lastIsAssistant && (lastMessage.content?.length > 0 || lastMessage.verifying)
+  )
+
   return (
     <div className="stream" aria-live="polite" aria-relevant="additions" aria-atomic="false">
-      {messages.map((message) => (
-        <Message
-          key={message.id}
-          role={message.role}
-          content={message.content}
-          sources={message.sources}
-        />
-      ))}
-      {isLoading && <TypingIndicator />}
+      {messages.map((message) => {
+        // An assistant bubble with no visible content while streaming would
+        // render empty — suppress it (the typing indicator covers this state).
+        if (
+          message.role === 'assistant' &&
+          message.streaming &&
+          !message.content
+        ) {
+          return null
+        }
+        return (
+          <Message
+            key={message.id}
+            role={message.role}
+            content={message.content}
+            sources={message.sources}
+          />
+        )
+      })}
+      {typingVisible && <TypingIndicator />}
+      {lastAssistantVerifying && <VerifyingIndicator />}
       <div ref={bottomRef} />
     </div>
   )

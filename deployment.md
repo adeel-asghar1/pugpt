@@ -62,3 +62,23 @@ Known limitations:
 - **The 0.34 coverage floor is a heuristic** and does not constitute proof of answer completeness. Distance and length gates (0.35 / 600 chars) still apply on top of it.
 - Dates/numeric tokens ("2026", "2026-27") are excluded from substantive counting by design; a question consisting only of date tokens is treated as "relevance unavailable" (no extra Tavily call).
 
+---
+
+## 21. Tavily web-result relevance filter (Step 23)
+
+Live official web pages retrieved by Tavily are **lexically relevance-filtered** before being sent to the LLM or to citations. The filter runs inside `WebSearchService.search()` — after domain/URL/content validation and before any web excerpt enters RAGService.
+
+Behaviour:
+- Question content terms are normalized (lowercase, inflection stripped, stopwords/dates/month names and their common abbreviations removed — months and years can never contribute to topical relevance).
+- For multi-term questions, a result is kept only if at least **two** question content terms appear in the page title or body. One-term questions require their single term to match.
+- Pure date/year ("2026", "November") or generic PU vocabulary alone ("university", "official") can never establish relevance by themselves.
+- Pages that match only on "November 2026" but not on any substantive word are rejected.
+- A result relevance rejection is silent (counts logged; no query content logged).
+
+Known limitations:
+- **Lexical filter, not semantic.** A campus-closure announcement worded as "university closed from 26 to 30 November 2026" for a question about "class schedule" may or may not match on "schedule" and is accepted only if at least two substantive terms overlap (e.g. "closures" and "classes" and/or "schedule").
+- **Wording is not meaning.** A page with the phrase "conference room schedule available" type overlap can pass as long as two substantive terms align; it is a weak but bounded signal.
+- **Date/year and generic words are not evidence of relevance** by design.
+- **A web signal rejected by the filter does NOT prove absence of an announcement** — Tavily returns the best-matching official-PU pages, and once rejected they are simply not cited; the answer is grounded in the remaining evidence (which may be PDF-only). A case of all-irrelevant results behaves like `pdf_missing`.
+- The filter can reject genuinely relevant pages that use substantially different wording; increase conservatism by loosening the rule via a reviewed change, not silently.
+

@@ -22,6 +22,7 @@ Failure modes are explicit statuses, never exceptions:
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -512,32 +513,48 @@ class RAGService:
 
     # ---------- public API ----------
 
-    def answer(self, question: str) -> RAGResult:
-        question = (question or "").strip()
-        if not question:
-            raise ValueError("Question must not be empty.")
+    def _resolve_context(self, question: str) -> dict:
+        """Steps 1-6 of the pipeline, shared by answer() and stream_answer().
 
+        Exactly one retrieval, at most one web search, identical logs and
+        identical sufficiency/fallback semantics as the non-streaming path.
+
+        Returns {"error": RAGResult} when the pipeline cannot proceed, or
+        {"error": None, "kept": ..., "web_sources": ..., "sparse_context": ...}
+        with the context for generation. Sources are built by the caller
+        (after the early no-context exit), matching the original order.
+        """
         # 1. Knowledge base available and non-empty?
         try:
             if self.chroma.count() == 0:
-                return RAGResult(STATUS_EMPTY_KB, EMPTY_KB_ANSWER, [], None)
+                return {"error": RAGResult(STATUS_EMPTY_KB, EMPTY_KB_ANSWER, [], None)}
         except Exception as exc:
             logger.warning("ChromaDB unavailable during KB check: %s", exc)
-            return RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"ChromaDB error: {exc}")
+            return {"error": RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"ChromaDB error: {exc}")}
 
         # 2. Embed the question
+        embed_started = time.perf_counter()
         try:
             query_vector = self.embeddings.embed_text(question)
         except Exception as exc:
+            embed_ms = (time.perf_counter() - embed_started) * 1000.0
+            logger.info("timing embed_ms=%.1f result=error", embed_ms)
             logger.warning("Embedding failed: %s", exc)
-            return RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"Embedding error: {exc}")
+            return {"error": RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"Embedding error: {exc}")}
+        embed_ms = (time.perf_counter() - embed_started) * 1000.0
+        logger.info("timing embed_ms=%.1f", embed_ms)
 
         # 3-5. Retrieve + relevance filter (intent/session boost applied)
+        retrieval_started = time.perf_counter()
         try:
             kept = self._retrieve(query_vector, question)
         except Exception as exc:
+            retrieval_ms = (time.perf_counter() - retrieval_started) * 1000.0
+            logger.info("timing retrieval_ms=%.1f kept=0 result=error", retrieval_ms)
             logger.warning("Retrieval failed: %s", exc)
-            return RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"ChromaDB error: {exc}")
+            return {"error": RAGResult(STATUS_ERROR, ERROR_ANSWER, [], f"ChromaDB error: {exc}")}
+        retrieval_ms = (time.perf_counter() - retrieval_started) * 1000.0
+        logger.info("timing retrieval_ms=%.1f kept=%d", retrieval_ms, len(kept))
         logger.info("retrieved pdf chunks kept=%d", len(kept))
 
         # 6. Optional live-web fallback (official pu.edu.pk only). Triggers
@@ -549,6 +566,7 @@ class RAGService:
         #    Ordinary PDF-answerable questions never touch the web. Any failure
         #    degrades to PDF-only/refusal. At most ONE search runs per request.
         web_sources: list[WebSource] = []
+        relevance_started = time.perf_counter()
         if kept:
             distances = [distance for _document, _metadata, distance, _adjusted in kept
                          if distance is not None]
@@ -565,6 +583,8 @@ class RAGService:
             chars_ok = False
             relevant, hits, substantive_total, relevance_tag, date_terms = _evidence_relevance([], question)
             sufficient = False
+        relevance_ms = (time.perf_counter() - relevance_started) * 1000.0
+        logger.info("timing relevance_ms=%.1f kept=%d", relevance_ms, len(kept))
         logger.info(
             "pdf evidence: kept=%d best_distance=%s total_chars=%d distance_ok=%s "
             "chars_ok=%s relevance_unavailable=%s relevance_hits=%d/%d date_terms=%d "
@@ -595,9 +615,45 @@ class RAGService:
 
         if reason is not None:
             logger.info("web search trigger=%s", reason)
+            web_started = time.perf_counter()
             web_sources = self._safe_web_search(question)
+            web_ms = (time.perf_counter() - web_started) * 1000.0
+            logger.info("timing tavily_ms=%.1f web_results=%d trigger=%s",
+                        web_ms, len(web_sources), reason)
         elif self._web_enabled():
             logger.info("web fallback: not taken (evidence sufficient)")
+
+        return {
+            "error": None,
+            "kept": kept,
+            "web_sources": web_sources,
+            "sparse_context": sparse_context,
+        }
+
+    @staticmethod
+    def _context_texts(kept, web_sources) -> list[str]:
+        """Context used by the numeric-claim verifier (document text + the
+        source header text shown to the model + web excerpts)."""
+        return [document for document, _metadata, _distance, _adjusted in kept] + [
+            f"{metadata.get('filename', '')} {metadata.get('effective_session', '')} {metadata.get('document_type', '')}"
+            for _document, metadata, _distance, _adjusted in kept
+        ] + [
+            f"{source.title} {source.url} {source.published_date or ''} {source.content}"
+            for source in web_sources
+        ]
+
+    def answer(self, question: str) -> RAGResult:
+        question = (question or "").strip()
+        if not question:
+            raise ValueError("Question must not be empty.")
+
+        ctx = self._resolve_context(question)
+        if ctx["error"] is not None:
+            return ctx["error"]
+
+        kept = ctx["kept"]
+        web_sources = ctx["web_sources"]
+        sparse_context = ctx["sparse_context"]
 
         if not kept and not web_sources:
             return RAGResult(STATUS_NO_CONTEXT, NO_CONTEXT_ANSWER, [], None)
@@ -606,28 +662,34 @@ class RAGService:
         sources += [self._web_rag_source(source) for source in web_sources]
 
         # 7. Grounded prompt (PDF and/or live official-PU web excerpts)
+        prompt_started = time.perf_counter()
         user_prompt = self._build_prompt(question, kept, web_sources, sparse_context=sparse_context)
+        prompt_ms = (time.perf_counter() - prompt_started) * 1000.0
+        logger.info("timing prompt_ms=%.1f pdf_blocks=%d web_blocks=%d",
+                    prompt_ms, len(kept), len(web_sources))
         logger.info("groq prompt: pdf_blocks=%d web_blocks=%d", len(kept), len(web_sources))
 
         # 8. Generate (exactly one call — the web fallback never adds a second)
+        llm_started = time.perf_counter()
         try:
             answer = self.llm.generate(user_prompt, system=PUGPT_SYSTEM_PROMPT)
         except Exception as exc:
+            llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            logger.info("timing groq_ms=%.1f result=error", llm_ms)
             logger.warning("LLM generation failed: %s", exc)
             return RAGResult(STATUS_ERROR, ERROR_ANSWER, sources, f"LLM error: {exc}")
+        llm_ms = (time.perf_counter() - llm_started) * 1000.0
+        logger.info("timing groq_ms=%.1f", llm_ms)
 
         # Numeric-claim verification: figures and session years in the answer
         # must trace back to the retrieved context (document text OR the source
         # headers shown to the model) or the question itself.
         # Unsupported claims are refused (logged, never hidden).
-        context_texts = [document for document, _metadata, _distance, _adjusted in kept] + [
-            f"{metadata.get('filename', '')} {metadata.get('effective_session', '')} {metadata.get('document_type', '')}"
-            for _document, metadata, _distance, _adjusted in kept
-        ] + [
-            f"{source.title} {source.url} {source.published_date or ''} {source.content}"
-            for source in web_sources
-        ]
+        context_texts = self._context_texts(kept, web_sources)
+        verify_started = time.perf_counter()
         unsupported = find_unsupported_claims(answer, context_texts, question)
+        verify_ms = (time.perf_counter() - verify_started) * 1000.0
+        logger.info("timing verify_ms=%.1f unsupported_claims=%d", verify_ms, len(unsupported))
         if unsupported:
             logger.warning(
                 "verifier outcome=refused; unsupported_claims=%s", unsupported
@@ -641,6 +703,155 @@ class RAGService:
 
         logger.info("verifier outcome=accepted")
         return RAGResult(STATUS_ANSWERED, answer, sources, None)
+
+    def stream_answer(self, question: str):
+        """Streaming path — same retrieval, fallback, prompt and verifier as
+        answer(), with deltas emitted progressively and a single terminal
+        event after verification completes. Exactly one retrieval, at most
+        one web search, exactly one Groq call; no retries.
+
+        Yields dict events (in order, exactly one terminal event last):
+          - {"type": "delta", "text": chunk}        (zero or more)
+          - {"type": "verifying"}                   (generation done, verification pending)
+          - {"type": "final", "status": "answered", "answer": text,
+             "sources": [...], "verifier": "accepted"}
+          - {"type": "replace", "status": ..., "answer": refusal/error text,
+             "verifier": ...}                        (verifier/truncation rejection)
+          - {"type": "error", "status": "error", "message": generic}
+
+        Sources and final status appear ONLY on terminal events. Provisional
+        deltas are visible before verification — see deployment.md streaming
+        notes. Verification remains the last gate; it never runs early.
+        """
+        stream_started = time.perf_counter()
+        question = (question or "").strip()
+        if not question:
+            yield {"type": "error", "status": "error", "message": ERROR_ANSWER}
+            return
+
+        ctx = self._resolve_context(question)
+        if ctx["error"] is not None:
+            error = ctx["error"]
+            yield {
+                "type": "final",
+                "status": error.status,
+                "answer": error.answer,
+                "sources": [s.to_dict() for s in error.sources],
+                "verifier": "n/a",
+            }
+            return
+
+        kept = ctx["kept"]
+        web_sources = ctx["web_sources"]
+        sparse_context = ctx["sparse_context"]
+
+        if not kept and not web_sources:
+            yield {
+                "type": "final",
+                "status": STATUS_NO_CONTEXT,
+                "answer": NO_CONTEXT_ANSWER,
+                "sources": [],
+                "verifier": "n/a",
+            }
+            return
+
+        sources = self._build_sources(kept) if kept else []
+        sources += [self._web_rag_source(source) for source in web_sources]
+
+        # 7. Grounded prompt (identical to the non-streaming path)
+        prompt_started = time.perf_counter()
+        user_prompt = self._build_prompt(question, kept, web_sources, sparse_context=sparse_context)
+        prompt_ms = (time.perf_counter() - prompt_started) * 1000.0
+        logger.info("timing prompt_ms=%.1f pdf_blocks=%d web_blocks=%d",
+                    prompt_ms, len(kept), len(web_sources))
+        logger.info("groq prompt: pdf_blocks=%d web_blocks=%d", len(kept), len(web_sources))
+
+        # 8. Stream generation — exactly one Groq call; no retry path exists.
+        accumulated: list[str] = []
+        llm_started = time.perf_counter()
+        stream_iter = None
+        finish_reason = None
+        try:
+            stream_iter = self.llm.stream_generate(user_prompt, system=PUGPT_SYSTEM_PROMPT)
+            for event in stream_iter:
+                if not isinstance(event, dict):
+                    continue
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    accumulated.append(delta)
+                    yield {"type": "delta", "text": delta}
+                    continue
+                if event.get("done"):
+                    finish_reason = event.get("finish_reason")
+        except Exception as exc:  # noqa: BLE001 — GroqError family or wiring issues
+            llm_ms = (time.perf_counter() - llm_started) * 1000.0
+            logger.info("timing groq_stream_ms=%.1f result=error", llm_ms)
+            logger.warning("LLM streaming failed: %s", exc)
+            logger.info("timing stream_total_ms=%.1f status=error",
+                        (time.perf_counter() - stream_started) * 1000.0)
+            yield {"type": "error", "status": "error", "message": ERROR_ANSWER}
+            return
+        finally:
+            close = getattr(stream_iter, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - teardown must not mask the outcome
+                    pass
+        llm_ms = (time.perf_counter() - llm_started) * 1000.0
+        logger.info("timing groq_stream_ms=%.1f", llm_ms)
+
+        answer = "".join(accumulated).strip()
+
+        if finish_reason == "length":
+            # Fail closed — a partial answer is never presented as complete.
+            logger.warning("stream truncated at max_completion_tokens; refusing partial answer")
+            logger.info("timing stream_total_ms=%.1f status=error",
+                        (time.perf_counter() - stream_started) * 1000.0)
+            yield {
+                "type": "replace",
+                "status": "error",
+                "answer": ERROR_ANSWER,
+                "verifier": "truncated",
+                "sources": [],
+            }
+            return
+        if not answer:
+            logger.warning("stream produced no content; refusing empty answer")
+            yield {"type": "error", "status": "error", "message": ERROR_ANSWER}
+            return
+
+        yield {"type": "verifying"}
+
+        # Numeric-claim verification, identical to the non-streaming path.
+        context_texts = self._context_texts(kept, web_sources)
+        verify_started = time.perf_counter()
+        unsupported = find_unsupported_claims(answer, context_texts, question)
+        verify_ms = (time.perf_counter() - verify_started) * 1000.0
+        logger.info("timing verify_ms=%.1f unsupported_claims=%d", verify_ms, len(unsupported))
+        if unsupported:
+            logger.warning(
+                "verifier outcome=refused; unsupported_claims=%s", unsupported
+            )
+            yield {
+                "type": "replace",
+                "status": "no_relevant_context",
+                "answer": NO_CONTEXT_ANSWER,
+                "verifier": "refused",
+                "sources": [],
+            }
+            return
+
+        logger.info("verifier outcome=accepted")
+        logger.info("timing stream_total_ms=%.1f status=answered",
+                    (time.perf_counter() - stream_started) * 1000.0)
+        yield {
+            "type": "final",
+            "status": STATUS_ANSWERED,
+            "answer": answer,
+            "sources": [s.to_dict() for s in sources],
+            "verifier": "accepted",
+        }
 
     # ---------- live web fallback ----------
 

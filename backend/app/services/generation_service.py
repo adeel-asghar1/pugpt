@@ -68,6 +68,27 @@ class GenerationService:
             return self.groq.generate(prompt, system=system, timeout=timeout)
         return self.ollama.generate(prompt, system=system, timeout=timeout)
 
+    def stream_generate(
+        self,
+        prompt: str,
+        system: str | None = None,
+        timeout: float | None = None,
+    ):
+        """Streaming counterpart of generate(). Groq only.
+
+        Streaming is a Groq-only capability; Ollama streaming is deliberately
+        not implemented (slow CPU generation has no payoff here). There is
+        NO fallback between providers — a misconfigured provider raises
+        GenerationConfigError instead of silently switching.
+        """
+        provider = self.resolved_provider()
+        if provider == "groq":
+            return self.groq.stream_generate(prompt, system=system, timeout=timeout)
+        raise GenerationConfigError(
+            "Streaming is supported only by the Groq provider "
+            f"(resolved LLM_PROVIDER={provider!r})."
+        )
+
 
 # Shared instance built from central configuration.
 generation_service = GenerationService()

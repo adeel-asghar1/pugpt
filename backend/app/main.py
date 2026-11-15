@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,6 +7,8 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.health import router as health_router
 from app.config import settings
 from app.services.embedding_service import embedding_service
+from app.services.groq_service import groq_service
+from app.services.web_search_service import web_search_service
 
 import logging
 
@@ -16,6 +20,15 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s"
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup keeps the existing import-time FastEmbed warmup below; shutdown
+    # closes shared HTTP clients so sockets are not leaked at exit.
+    yield
+    groq_service.close()
+    web_search_service.close()
 
 # Pre-load the FastEmbed ONNX model at import time so the first request does
 # not pay the ~200 MB load latency and health reflects reality immediately.
@@ -32,7 +45,7 @@ if settings.embedding_provider.strip().lower() == "fastembed":
         )
         raise
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

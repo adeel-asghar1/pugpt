@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1/chat/completions"
     groq_chat_model: str = "openai/gpt-oss-120b"
+    # Upper bound on output tokens for one answer. gpt-oss-120b supports up to
+    # 65,536 output tokens per completion; 1024 comfortably covers a complete
+    # grounded RAG answer (these are typically 300-700 tokens). If a response
+    # is truncated at this limit (finish_reason="length"), the answer is
+    # treated as unusable — it is never presented as complete.
+    groq_max_tokens: int = 1024
     groq_timeout: float = 120.0
     # Generation provider: "auto" (default) -> "groq" when GROQ_API_KEY is set,
     # otherwise "ollama". Set to "groq" or "ollama" to force one explicitly.
@@ -111,6 +117,27 @@ class Settings(BaseSettings):
 
     # Ingestion: chunks embedded per Ollama /api/embed request
     ingestion_batch_size: int = 16
+
+    @field_validator("groq_max_tokens", mode="before")
+    @classmethod
+    def _validate_groq_max_tokens(cls, v):
+        # 65536 = documented maximum output for openai/gpt-oss-120b on Groq.
+        if isinstance(v, bool):
+            raise ValueError("GROQ_MAX_TOKENS must be an integer.")
+        if isinstance(v, float):
+            if not v.is_integer():
+                raise ValueError("GROQ_MAX_TOKENS must be an integer.")
+            v = int(v)
+        if isinstance(v, str):
+            try:
+                v = int(v.strip())
+            except ValueError:
+                raise ValueError("GROQ_MAX_TOKENS must be an integer.") from None
+        if not isinstance(v, int):
+            raise ValueError("GROQ_MAX_TOKENS must be an integer.")
+        if v < 1 or v > 65536:
+            raise ValueError("GROQ_MAX_TOKENS must be between 1 and 65536.")
+        return v
 
     @field_validator("groq_api_key", "tavily_api_key", mode="before")
     @classmethod

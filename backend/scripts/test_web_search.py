@@ -213,7 +213,7 @@ def make_http_service(response=None, raise_exc=None, api_key=TEST_KEY):
 svc, captured = make_http_service(
     httpx.Response(200, json={
         "results": [
-            {"title": "PU Admissions", "url": "https://www.pu.edu.pk/adm", "content": "official snippet",
+            {"title": "PU Admissions", "url": "https://www.pu.edu.pk/adm", "content": "current admission schedule published for the 2026-27 session by the University of the Punjab",
              "score": 0.8, "published_date": "2026-08-01"},
             {"title": "Blogs", "url": "https://blog.example.com/pu", "content": "unofficial junk"},
             {"title": "Lookalike", "url": "https://pu.edu.pk.evil.com/", "content": "lookalike junk"},
@@ -521,9 +521,9 @@ with patched(web_search_enabled=True, web_search_on_recency=True):
         httpx.Response(200, json={
             "results": [
                 {"title": "PU Admissions", "url": "https://www.pu.edu.pk/adm",
-                 "content": "official snippet", "score": 0.8, "published_date": "2026-08-01"},
+                 "content": "current admission notice published for the 2026-27 session by the University of the Punjab", "score": 0.8, "published_date": "2026-08-01"},
                 {"title": "CSE", "url": "https://cse.pu.edu.pk/adm",
-                 "content": "second snippet", "score": 0.5, "published_date": None},
+                 "content": "admission notice for Department of Computer Science current session", "score": 0.5, "published_date": None},
             ],
             "response_time": 0.42,
             "usage": {"credits": 1},
